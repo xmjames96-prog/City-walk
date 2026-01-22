@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>城市迷踪 - 智能探索</title>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              orange: { 50: '#fff7ed', 100: '#ffedd5', 500: '#f97316', 600: '#ea580c' }
+            }
+          }
+        }
+      }
+    </script>
+
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { background-color: #F8FAFC; overflow: hidden; touch-action: none; }
+        .pt-safe { padding-top: env(safe-area-inset-top, 20px); }
+        .mb-safe { margin-bottom: env(safe-area-inset-bottom, 20px); }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        
+        /* Animation */
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .animate-pulse { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        /* Leaflet Customization */
+        .custom-pin { background: transparent; border: none; }
+        .custom-label { background: transparent; border: none; }
+        .leaflet-control-attribution { display: none !important; } /* Clean look */
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        
+        // --- Mock Lucide Icons (Since we can't import directly in standalone HTML easily without build step, we use simple SVG wrappers or lucide.createIcons)
+        // Actually, we can use a helper to render Lucide icons from the global object if available, 
+        // but for React in browser, it's easier to just inline the SVGs or use a simple component map.
+        // Let's create a simple Icon component wrapper.
+        
+        const Icon = ({ name, size = 24, className = "", ...props }) => {
+            const iRef = useRef(null);
+            useEffect(() => {
+                if (iRef.current) {
+                    lucide.createIcons({
+                        root: iRef.current,
+                        name: name,
+                        attrs: { width: size, height: size, class: className, ...props }
+                    });
+                }
+            }, [name, size, className]);
+            // Return a span that Lucide will inject SVG into
+            return <span ref={iRef} className={`flex items-center justify-center ${className}`} {...props} data-lucide={name}></span>;
+        };
+
+        // Mapping your original icon names to Lucide names string
+        const MapPin = (p) => <Icon name="map-pin" {...p} />;
+        const ChevronLeft = (p) => <Icon name="chevron-left" {...p} />;
+        const Trees = (p) => <Icon name="trees" {...p} />;
+        const Waves = (p) => <Icon name="waves" {...p} />;
+        const Store = (p) => <Icon name="store" {...p} />;
+        const Users = (p) => <Icon name="users" {...p} />;
+        const Landmark = (p) => <Icon name="landmark" {...p} />;
+        const TentTree = (p) => <Icon name="tent-tree" {...p} />; // 'tent-tree' might not exist in older lucide, fallback to 'tent'
+        const Navigation = (p) => <Icon name="navigation" {...p} />;
+        const Pause = (p) => <Icon name="pause" {...p} />;
+        const Play = (p) => <Icon name="play" {...p} />;
+        const Square = (p) => <Icon name="square" {...p} />;
+        const Loader2 = (p) => <Icon name="loader-2" {...p} />;
+        const Footprints = (p) => <Icon name="footprints" {...p} />;
+        const MapIcon = (p) => <Icon name="map" {...p} />;
+        const RefreshCw = (p) => <Icon name="refresh-cw" {...p} />;
+        const Calculator = (p) => <Icon name="calculator" {...p} />;
+        const Flag = (p) => <Icon name="flag" {...p} />;
+        const Sparkles = (p) => <Icon name="sparkles" {...p} />;
+        const X = (p) => <Icon name="x" {...p} />;
+        const Layers = (p) => <Icon name="layers" {...p} />;
+
+        // --- Mock AI API ---
+        const generateAIContent = async (prompt) => {
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    resolve("在这段旅程中，你将穿过静谧的街心公园，感受微风拂过脸颊。沿途的河滨栈道是你思考的好去处，而终点的繁华将带你重回城市的喧嚣。享受这段专属于你的城市漫步吧！");
+                }, 1500);
+            });
+        };
+
+        // --- Data Helpers ---
+        const getIconSVGName = (id) => {
+            switch (id) {
+                case "park": return "trees";
+                case "river": return "waves";
+                case "forest": return "tent";
+                case "avoid-mall": return "store"; // visually distuinguish later
+                case "culture": return "landmark";
+                case "crowd": return "users";
+                default: return "map-pin";
+            }
+        };
+
+        const getLabel = (id) => {
+            const labels = {
+                park: "公园", river: "河流", forest: "森林",
+                "avoid-mall": "避开商圈", culture: "文化地标", crowd: "热闹人潮",
+            };
+            return labels[id] || id;
+        };
+
+        const getPOIName = (type) => {
+            const names = {
+                park: ["街心公园", "社区绿地", "市政公园", "口袋公园"],
+                river: ["沿河栈道", "亲水平台", "人工湖畔", "溪流小径"],
+                forest: ["林荫大道", "城市绿道", "生态长廊"],
+                culture: ["历史街区", "文化广场", "艺术中心"],
+                crowd: ["商业步行街", "购物中心广场", "繁华路口"],
+                "avoid-mall": ["静谧小径", "幽静后街", "林间小路"],
+            };
+            const list = names[type] || ["城市绿道", "休闲步道"];
+            return list[Math.floor(Math.random() * list.length)];
+        };
+
+        // --- Components ---
+
+        const Header = () => (
+            <header className="bg-gradient-to-b from-orange-50 to-transparent pt-safe">
+                <div className="max-w-2xl mx-auto px-6 py-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <MapPin className="text-orange-500" size={24} />
+                        <span className="text-2xl font-bold text-gray-800">城市迷踪</span>
+                    </div>
+                </div>
+            </header>
+        );
+
+        const DistanceOptions = ({ selected, onSelect }) => {
+            const OptionBtn = ({ val, label }) => (
+                <button
+                    onClick={() => onSelect(val)}
+                    className={`p-6 rounded-3xl font-bold text-center transition-all ${
+                        selected === val
+                        ? "bg-orange-100 border-2 border-orange-400 shadow-sm"
+                        : "bg-white border-2 border-gray-100 hover:border-orange-200"
+                    }`}
+                >
+                    <div className="flex flex-col items-center justify-center gap-1">
+                         <span className="text-2xl font-bold text-gray-800">{label || val}</span>
+                         {typeof val === 'number' && <span className="text-xs font-medium text-gray-500">公里</span>}
+                         {val === "random" && <span className="text-xs font-medium text-gray-500">随机模式</span>}
+                    </div>
+                </button>
+            );
+
+            return (
+                <div className="mb-6 grid grid-cols-2 gap-4">
+                    <OptionBtn val={1} label="1" />
+                    <OptionBtn val={3} label="3" />
+                    <OptionBtn val={5} label="5" />
+                    <OptionBtn val="random" label="随机" />
+                </div>
+            );
+        };
+
+        const TimeOptions = ({ selected, onSelect }) => (
+            <div className="mb-6 grid grid-cols-2 gap-4">
+                {[15, 30, 60].map((time) => (
+                    <button
+                        key={time}
+                        onClick={() => onSelect(time)}
+                        className={`p-6 rounded-3xl font-bold text-center transition-all ${
+                            selected === time
+                            ? "bg-orange-200 border-2 border-orange-500 shadow-md"
+                            : "bg-white border-2 border-gray-200 hover:border-orange-200"
+                        }`}
+                    >
+                        <div className="text-4xl mb-2">{time}</div>
+                        <div className="text-xs text-gray-500 mt-1">分钟</div>
+                    </button>
+                ))}
+            </div>
+        );
+
+        const WaypointFilters = ({ selected, onSelect }) => {
+            const waypoints = ["park", "river", "forest", "avoid-mall", "culture", "crowd"];
+            const toggle = (id) => selected.includes(id) ? onSelect(selected.filter(w => w !== id)) : onSelect([...selected, id]);
+
+            return (
+                <div className="mb-8">
+                    <h2 className="text-lg font-bold text-gray-800 mb-4">选择途径</h2>
+                    <div className="grid grid-cols-3 gap-3">
+                        {waypoints.map((id) => (
+                            <button
+                                key={id}
+                                onClick={() => toggle(id)}
+                                className={`px-3 py-3 rounded-2xl font-medium text-xs transition-all flex flex-col items-center gap-1.5 ${
+                                    selected.includes(id) ? "bg-orange-500 text-white shadow-md" : "bg-white text-orange-500 border border-orange-200 hover:border-orange-400"
+                                }`}
+                            >
+                                <Icon name={getIconSVGName(id)} size={20} />
+                                <div className="text-xs">{getLabel(id)}</div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const AIGuideModal = ({ routeInfo, isOpen, onClose }) => {
+            const [loading, setLoading] = useState(false);
+            const [content, setContent] = useState("");
+
+            useEffect(() => {
+                if (isOpen && !content) {
+                    setLoading(true);
+                    const prompt = `AI Guide Prompt...`; 
+                    generateAIContent(prompt).then(text => {
+                        setContent(text);
+                        setLoading(false);
+                    });
+                }
+            }, [isOpen, content, routeInfo]);
+
+            if (!isOpen) return null;
+
+            return (
+                <div className="absolute inset-0 z-[3000] flex items-end sm:items-center justify-center pointer-events-none">
+                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto" onClick={onClose} />
+                    <div className="bg-white w-full max-w-sm m-4 rounded-3xl shadow-2xl p-6 relative pointer-events-auto animate-in">
+                        <button onClick={onClose} className="absolute top-4 right-4 p-1 text-slate-400 hover:text-slate-600">
+                            <X size={20} />
+                        </button>
+                        <div className="flex items-center gap-2 mb-4">
+                            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
+                                <Sparkles size={16} />
+                            </div>
+                            <h3 className="font-bold text-slate-800">AI 城市导游</h3>
+                        </div>
+                        {loading ? (
+                            <div className="py-8 flex flex-col items-center justify-center text-slate-400 space-y-3">
+                                <Loader2 size={24} className="animate-spin text-indigo-500" />
+                                <span className="text-xs">正在为您生成专属路线指南...</span>
+                            </div>
+                        ) : (
+                            <div className="text-sm leading-relaxed text-slate-600">
+                                {content}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const LeafletMap = ({ selectedWaypoints = [], targetDistance, pageTitle = "", onBack }) => {
+            const mapContainerRef = useRef(null);
+            const mapInstanceRef = useRef(null);
+            const routeLayerRef = useRef(null);
+            const markerLayerRef = useRef(null);
+            const tileLayerRef = useRef(null);
+
+            const [permissionGranted, setPermissionGranted] = useState(false);
+            const [initialLocation, setInitialLocation] = useState(null);
+            const [routeInfo, setRouteInfo] = useState(null); 
+            const [status, setStatus] = useState("准备中...");
+            const [appState, setAppState] = useState("initializing");
+            const [isPaused, setIsPaused] = useState(false);
+            const [showAIGuide, setShowAIGuide] = useState(false);
+            const [mapStyle, setMapStyle] = useState('light'); 
+            const [showLayerMenu, setShowLayerMenu] = useState(false);
+
+            useEffect(() => {
+                checkPermissionAndInit();
+                return () => {
+                    if (mapInstanceRef.current) {
+                        mapInstanceRef.current.remove();
+                        mapInstanceRef.current = null;
+                    }
+                };
+            }, []);
+
+            const checkPermissionAndInit = () => {
+                // In standalone, just init directly or simulate check
+                const hasAuth = localStorage.getItem("geo_permission_granted");
+                if (hasAuth) {
+                    setPermissionGranted(true);
+                    setTimeout(initMap, 100);
+                }
+            };
+
+            const requestPermission = () => {
+                setPermissionGranted(true);
+                localStorage.setItem("geo_permission_granted", "true");
+                setTimeout(initMap, 100);
+            };
+
+            const initMap = () => {
+                if (!mapContainerRef.current || mapInstanceRef.current) return;
+                
+                const map = L.map(mapContainerRef.current, {
+                    center: [22.5333, 113.9304], 
+                    zoom: 15,
+                    zoomControl: false,
+                    attributionControl: false
+                });
+                
+                const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                    maxZoom: 18,
+                    attribution: '&copy; CARTO'
+                }).addTo(map);
+                
+                tileLayerRef.current = tileLayer;
+                mapInstanceRef.current = map;
+                routeLayerRef.current = L.layerGroup().addTo(map);
+                markerLayerRef.current = L.layerGroup().addTo(map);
+                fetchLocationAndGenerate(map);
+            };
+
+            const changeMapStyle = (style) => {
+                if (!tileLayerRef.current) return;
+                let url = '';
+                if (style === 'light') url = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+                else if (style === 'dark') url = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+                else if (style === 'satellite') url = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+                
+                tileLayerRef.current.setUrl(url);
+                setMapStyle(style);
+                setShowLayerMenu(false);
+            };
+
+            const fetchLocationAndGenerate = (map) => {
+                setStatus("获取精准定位...");
+                setTimeout(() => {
+                    const userLat = 22.518;
+                    const userLng = 113.942;
+                    const startLoc = { lat: userLat, lng: userLng };
+                    
+                    setInitialLocation(startLoc);
+                    map.setView([userLat, userLng], 15);
+
+                    setStatus(`规划 ${targetDistance/1000}km 智能路线...`);
+                    generateIntelligentRoute(map, startLoc, targetDistance/1000);
+                }, 800);
+            };
+
+            const generateIntelligentRoute = async (map, startLoc, targetKm, attempt = 1) => {
+                // ... (Same logic as provided in previous React code, simplified for standalone)
+                // For standalone demo, we use the fallback visualization logic because OSRM API might be blocked by CORS on local file:// or some domains.
+                // But let's try the real fetch logic first.
+                
+                const minAcceptableKm = targetKm * 0.85;
+                const maxAcceptableKm = targetKm * 1.15;
+                let linearDistKm = targetKm * 0.6; 
+                if (attempt > 1) { linearDistKm = targetKm * 0.5; setStatus(`优化路线 (${attempt}/3)...`); }
+
+                const linearDistDeg = linearDistKm / 111;
+                const randomAngle = (Math.random() * 360) * Math.PI / 180;
+                const endLat = startLoc.lat + linearDistDeg * Math.cos(randomAngle);
+                const endLng = startLoc.lng + linearDistDeg * Math.sin(randomAngle);
+                const endLoc = { lat: endLat, lng: endLng };
+
+                const midLat = (startLoc.lat + endLat) / 2;
+                const midLng = (startLoc.lng + endLng) / 2;
+                const dx = endLng - startLoc.lng;
+                const dy = endLat - startLoc.lat;
+                const len = Math.sqrt(dx*dx + dy*dy);
+                const pdx = -dy / len; 
+                const pdy = dx / len; 
+
+                const offsetKm = targetKm * 0.25; 
+                const offsetDeg = offsetKm / 111;
+                const side = Math.random() > 0.5 ? 1 : -1;
+                const wpLat = midLat + pdy * offsetDeg * side;
+                const wpLng = midLng + pdx * offsetDeg * side;
+                const waypointLoc = { lat: wpLat, lng: wpLng };
+
+                const waypoints = [startLoc, waypointLoc, endLoc];
+
+                try {
+                    const coordsString = waypoints.map(p => `${p.lng},${p.lat}`).join(';');
+                    const url = `https://router.project-osrm.org/route/v1/walking/${coordsString}?overview=full&geometries=geojson`;
+                    
+                    const response = await fetch(url);
+                    const data = await response.json();
+
+                    if (!data.routes || data.routes.length === 0) throw new Error("No route");
+
+                    const route = data.routes[0];
+                    const realDistanceKm = route.distance / 1000;
+
+                    if ((realDistanceKm > maxAcceptableKm || realDistanceKm < minAcceptableKm) && attempt < 3) {
+                        setTimeout(() => generateIntelligentRoute(map, startLoc, targetKm, attempt + 1), 500);
+                        return;
+                    }
+                    renderRoute(map, route, realDistanceKm);
+                } catch (error) {
+                    console.error(error);
+                    setStatus("无法连接规划服务，请检查网络");
+                }
+            };
+
+            const renderRoute = (map, route, realDistanceKm) => {
+                const coordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                const calculatedDurationMin = Math.round(realDistanceKm / 5 * 60);
+
+                if (routeLayerRef.current) routeLayerRef.current.clearLayers();
+                
+                L.polyline(coordinates, { color: 'white', weight: 9, opacity: 0.8, lineCap: 'round' }).addTo(routeLayerRef.current);
+
+                for (let i = 0; i < coordinates.length - 1; i++) {
+                    const p1 = coordinates[i];
+                    const p2 = coordinates[i+1];
+                    const ratio = i / coordinates.length;
+                    const color = `rgb(${Math.round(249 - 10 * ratio)}, ${Math.round(115 - 47 * ratio)}, ${Math.round(22 + 46 * ratio)})`;
+                    L.polyline([p1, p2], { color: color, weight: 5, opacity: 1.0, lineCap: 'round' }).addTo(routeLayerRef.current);
+                }
+
+                map.fitBounds(L.polyline(coordinates).getBounds(), { padding: [50, 50] });
+
+                if (markerLayerRef.current) markerLayerRef.current.clearLayers();
+
+                const startIcon = L.divIcon({ className: 'custom-pin', html: `<div style="background-color:#3b82f6; width:20px; height:20px; border:4px solid white; border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>`, iconSize: [20, 20] });
+                L.marker(coordinates[0], { icon: startIcon }).addTo(markerLayerRef.current);
+
+                const endIcon = L.divIcon({ className: 'custom-pin', html: `<div style="display:flex; flex-direction:column; align-items:center; transform:translate(0, -100%);"><div style="background:#ef4444; color:white; padding:4px 8px; border-radius:6px; font-size:10px; font-weight:bold; margin-bottom:4px;">终点</div><div style="width:24px; height:24px; background:#ef4444; border:2px solid white; border-radius:50%;"></div></div>`, iconSize: [0, 0] });
+                L.marker(coordinates[coordinates.length - 1], { icon: endIcon }).addTo(markerLayerRef.current);
+
+                // Waypoints logic (simplified)
+                if (selectedWaypoints.length > 0) {
+                    selectedWaypoints.forEach((wp, idx) => {
+                        const progress = (idx + 1) / (selectedWaypoints.length + 1);
+                        const coordIdx = Math.floor(progress * coordinates.length);
+                        const pt = coordinates[coordIdx];
+                        const name = getPOIName(wp);
+                        const distAtPoint = (realDistanceKm * progress).toFixed(1);
+                        const html = `<div style="transform:translate(-50%, -120%); display:flex; flex-direction:column; align-items:center;"><div style="background:white; padding:6px 10px; border-radius:12px; box-shadow:0 3px 8px rgba(0,0,0,0.15); min-width:80px; text-align:center;"><span style="font-size:10px; color:#f97316; font-weight:800; display:block;">${distAtPoint}km</span><span style="font-size:11px; font-weight:bold; color:#374151;">${name}</span></div><div style="width:2px; height:8px; background:#f97316;"></div><div style="width:8px; height:8px; background:#f97316; border-radius:50%; border:2px solid white;"></div></div>`;
+                        L.marker(pt, { icon: L.divIcon({ className: 'custom-label', html: html, iconSize: [0, 0] }) }).addTo(markerLayerRef.current);
+                    });
+                }
+
+                setRouteInfo({ distance: realDistanceKm.toFixed(1), time: calculatedDurationMin, waypoints: selectedWaypoints.length > 0 ? selectedWaypoints.map(getLabel).join('、') : "自由探索" });
+                setAppState("preview");
+            };
+
+            const handleStartNav = () => setAppState("navigating");
+            const handleStopNav = () => { setAppState("stopped"); setIsPaused(false); };
+            const handleRefresh = () => { if(initialLocation && mapInstanceRef.current) generateIntelligentRoute(mapInstanceRef.current, initialLocation, targetDistance/1000); };
+
+            return (
+                <div className="relative h-screen w-full bg-[#F8FAFC] overflow-hidden flex flex-col">
+                    <AIGuideModal routeInfo={routeInfo} isOpen={showAIGuide} onClose={() => setShowAIGuide(false)} />
+
+                    {!permissionGranted && (
+                        <div className="absolute inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
+                            <div className="bg-white rounded-3xl p-8 w-full max-w-sm text-center shadow-2xl">
+                                <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6 text-orange-500">
+                                    <MapIcon size={40} />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 mb-3">开启城市探索</h3>
+                                <p className="text-gray-500 text-sm mb-8">为了在主路附近为您规划路线，我们需要获取一次您的当前位置信息。</p>
+                                <button onClick={requestPermission} className="w-full py-4 bg-gray-900 text-white font-bold rounded-2xl shadow-lg">允许访问位置</button>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="absolute top-0 left-0 right-0 z-[1000] bg-white/90 backdrop-blur-md border-b border-slate-200 shadow-sm pt-safe">
+                        <div className="flex items-center justify-between px-4 py-3">
+                            <button onClick={onBack} className="p-2 -ml-2 text-slate-700 hover:bg-slate-100 rounded-full transition"><ChevronLeft size={24} /></button>
+                            <div className="flex flex-col items-center">
+                                <span className="font-bold text-slate-800 text-sm">{pageTitle}</span>
+                                {appState === 'navigating' && (
+                                    <div className="flex items-center gap-2 text-[10px]">
+                                        {isPaused ? <span className="text-orange-500 font-medium">已暂停</span> : <span className="text-green-600 font-medium">导航中</span>}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="w-8"></div>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 relative w-full h-full z-0 bg-slate-100">
+                        {appState === 'initializing' && permissionGranted && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-slate-50/50 backdrop-blur-sm z-10">
+                                <div className="bg-white px-6 py-4 rounded-2xl shadow-xl flex flex-col items-center gap-3">
+                                    <Loader2 size={32} className="animate-spin text-orange-500" />
+                                    <div className="text-center"><div className="font-bold text-slate-800">正在智能规划...</div><div className="text-xs text-slate-500 mt-1">{status}</div></div>
+                                </div>
+                            </div>
+                        )}
+                        {appState === 'preview' && (
+                            <div className="absolute top-20 right-4 z-[900] flex flex-col gap-3">
+                                <div className="relative">
+                                    <button onClick={() => setShowLayerMenu(!showLayerMenu)} className="bg-white p-3 rounded-full shadow-lg text-slate-600 hover:text-orange-500 transition-colors"><Layers size={20} /></button>
+                                    {showLayerMenu && (
+                                        <div className="absolute right-12 top-0 bg-white rounded-xl shadow-xl p-2 w-32 flex flex-col gap-1 border border-slate-100">
+                                            <button onClick={() => changeMapStyle('light')} className={`px-3 py-2 text-xs font-medium text-left rounded-lg ${mapStyle==='light' ? 'bg-orange-50 text-orange-600' : 'text-slate-600 hover:bg-slate-50'}`}>标准清新</button>
+                                            <button onClick={() => changeMapStyle('dark')} className={`px-3 py-2 text-xs font-medium text-left rounded-lg ${mapStyle==='dark' ? 'bg-orange-50 text-orange-600' : 'text-slate-600 hover:bg-slate-50'}`}>暗黑科技</button>
+                                            <button onClick={() => changeMapStyle('satellite')} className={`px-3 py-2 text-xs font-medium text-left rounded-lg ${mapStyle==='satellite' ? 'bg-orange-50 text-orange-600' : 'text-slate-600 hover:bg-slate-50'}`}>卫星混合</button>
+                                        </div>
+                                    )}
+                                </div>
+                                <button onClick={handleRefresh} className="bg-white p-3 rounded-full shadow-lg text-slate-600 hover:text-orange-500 transition-colors"><RefreshCw size={20} /></button>
+                                <button onClick={() => setShowAIGuide(true)} className="bg-indigo-600 p-3 rounded-full shadow-lg text-white hover:bg-indigo-700 transition-colors"><Sparkles size={20} /></button>
+                            </div>
+                        )}
+                        <div id="map-container" ref={mapContainerRef} className="w-full h-full" style={{background: '#f8fafc'}}></div>
+                    </div>
+
+                    {appState === 'preview' && routeInfo && (
+                        <div className="absolute bottom-0 left-0 right-0 z-[1000] p-4 bg-transparent">
+                            <div className="bg-white rounded-3xl shadow-2xl p-5 border border-slate-100 mb-safe">
+                                <div className="flex items-center justify-between mb-6">
+                                    <div className="flex flex-col"><span className="text-xs text-slate-400 font-medium mb-1">全程距离</span><div className="flex items-baseline gap-1"><span className={`text-2xl font-bold ${Math.abs(routeInfo.distance - targetDistance/1000) > 1 ? 'text-orange-500' : 'text-slate-900'}`}>{routeInfo.distance}</span><span className="text-sm text-slate-600 font-medium">公里</span></div></div>
+                                    <div className="w-px h-8 bg-slate-100 mx-4"></div>
+                                    <div className="flex flex-col"><span className="text-xs text-slate-400 font-medium mb-1">预计用时</span><div className="flex items-baseline gap-1"><span className="text-2xl font-bold text-slate-900">{routeInfo.time}</span><span className="text-sm text-slate-600 font-medium">分钟</span></div></div>
+                                    <div className="w-px h-8 bg-slate-100 mx-4"></div>
+                                    <div className="flex flex-col items-end"><span className="text-xs text-slate-400 font-medium mb-1">算法</span><div className="flex items-center gap-1 text-blue-600 bg-blue-50 px-2 py-1 rounded-lg"><Calculator size={12} /><span className="text-xs font-bold">迭代逼近</span></div></div>
+                                </div>
+                                <div className="bg-slate-50 rounded-xl p-3 mb-5 flex items-start gap-2"><MapIcon size={14} className="text-slate-400 mt-0.5 shrink-0" /><div className="text-xs text-slate-600 leading-relaxed line-clamp-2"><span className="font-bold text-slate-700">途径：</span>{routeInfo.waypoints}</div></div>
+                                <button onClick={handleStartNav} className="w-full bg-slate-900 text-white font-bold py-4 rounded-2xl shadow-xl flex items-center justify-center gap-2"><Navigation size={18} />开始导航</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {appState === 'navigating' && (
+                        <div className="absolute bottom-8 left-0 right-0 z-[1000] flex justify-center gap-6 mb-safe">
+                            <button onClick={() => setIsPaused(!isPaused)} className={`flex flex-col items-center gap-1 group transition-all ${isPaused ? 'scale-110' : ''}`}>
+                                <div className={`w-16 h-16 rounded-full flex items-center justify-center shadow-2xl border-4 ${isPaused ? 'bg-green-600 border-green-500 text-white' : 'bg-white border-white text-slate-700'}`}>{isPaused ? <Play size={28} /> : <Pause size={28} />}</div>
+                                <span className="text-xs font-bold text-slate-600 bg-white/90 px-3 py-1 rounded-full shadow-sm">{isPaused ? "继续" : "暂停"}</span>
+                            </button>
+                            <button onClick={handleStopNav} className="flex flex-col items-center gap-1 group">
+                                <div className="w-16 h-16 rounded-full bg-white border-4 border-white flex items-center justify-center shadow-2xl text-red-500"><Square size={24} /></div>
+                                <span className="text-xs font-bold text-slate-600 bg-white/90 px-3 py-1 rounded-full shadow-sm">停止</span>
+                            </button>
+                        </div>
+                    )}
+
+                    {appState === 'stopped' && (
+                        <div className="absolute bottom-8 left-0 right-0 z-[1000] flex justify-center mb-safe"><div className="bg-white/90 backdrop-blur-md px-6 py-3 rounded-full shadow-lg border border-slate-200 text-sm font-medium text-slate-600">导航已结束，您可以自由浏览地图</div></div>
+                    )}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [view, setView] = useState('home');
+            const [mode, setMode] = useState("distance");
+            const [selectedDistance, setSelectedDistance] = useState(3);
+            const [selectedTime, setSelectedTime] = useState(30);
+            const [selectedWaypoints, setSelectedWaypoints] = useState([]);
+            
+            const [targetDistance, setTargetDistance] = useState(3000);
+            const [headerTitle, setHeaderTitle] = useState("");
+
+            const handleStart = () => {
+                let distMeters = 3000;
+                if (mode === 'distance') {
+                    const d = selectedDistance === 'random' ? (Math.random() * 5 + 2) : selectedDistance;
+                    distMeters = d * 1000;
+                } else {
+                    distMeters = selectedTime * 83.33;
+                }
+
+                let placeName = "城市漫游";
+                if (selectedWaypoints.length > 0) placeName = getPOIName(selectedWaypoints[0]);
+                else placeName = "随机漫步";
+                
+                const finalDistKm = (distMeters / 1000).toFixed(1);
+                setHeaderTitle(`${placeName} - ${finalDistKm}公里`);
+                setTargetDistance(distMeters);
+                setView('detail');
+            };
+
+            return (
+                <div className="font-sans h-screen flex flex-col">
+                    {view === 'home' && (
+                        <div className="flex-1 flex flex-col overflow-y-auto bg-gradient-to-b from-orange-50 to-orange-100/50">
+                            <Header />
+                            <div className="flex-1 px-6 pb-6 w-full max-w-md mx-auto mt-4">
+                                {mode === "distance" ? <DistanceOptions selected={selectedDistance} onSelect={setSelectedDistance} /> : <TimeOptions selected={selectedTime} onSelect={setSelectedTime} />}
+                                <WaypointFilters selected={selectedWaypoints} onSelect={selectedWaypoints} />
+                                <button onClick={handleStart} className="w-full bg-orange-500 text-white font-bold py-4 rounded-2xl shadow-lg mt-auto">开始 GO</button>
+                            </div>
+                        </div>
+                    )}
+                    {view === 'detail' && (
+                        <LeafletMap targetDistance={targetDistance} selectedWaypoints={selectedWaypoints} pageTitle={headerTitle} onBack={() => setView('home')} />
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
